@@ -1,0 +1,240 @@
+// This is to control the 16x2 LCD screen
+#include <LiquidCrystal.h>
+
+// Tell Arduino which pins are connected to the LCD
+// LCD pins: RS, E, D4, D5, D6, D7
+LiquidCrystal lcd(12, 11, 5, 4, 3, 2);
+
+
+// These are all the possible states the ship can be in
+enum State {
+  OPEN_SEA,       // Defaulkt state
+  ANCHOR_DROPPED, // Ship has dropped its anchor
+  STORM,          // storm detected
+  CHARYBDIS,      // Charybdis has been detected
+  WRECKED         // Ship is wrecked
+};
+
+
+// Start the program in the OPEN_SEA state
+State currentState = OPEN_SEA;
+
+
+// Pin connected to the light sensor
+const int LIGHT_PIN = A0;
+
+// Pins connected to the ultrasonic distance sensor
+const int TRIG_PIN = 9;
+const int ECHO_PIN = 10;
+
+// Pin connected to the button
+const int BUTTON_PIN = 7;
+
+
+// Stores the time when a dangerous situation starts
+// We use this as a 5 second timer before the ship gets wrecked
+unsigned long dangerStartTime = 0;
+
+
+// Stores the previous button state
+// HIGH = button is not pressed
+// LOW  = button is pressed
+int lastButtonState = HIGH;
+
+
+// Remembers what state the ship was in before the anchor was dropped
+State stateBeforeAnchor = OPEN_SEA;
+
+
+// If the light level goes below this number, we consider it to be a storm
+int lightThreshold = 512;
+
+
+// If something is closer than 100 cm, we consider Charybdis to be nearby
+const int CHARYBDIS_DISTANCE_CM = 100;
+
+
+void setup() {
+
+  // INPUT_PULLUP means the Arduino automatically keeps the button HIGH when it is not being pressed.
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
+
+  // Start the LCD with 16 columns and 2 rows
+  lcd.begin(16, 2);
+
+  // The trigger pin sends out the ultrasonic signal
+  pinMode(TRIG_PIN, OUTPUT);
+
+  // The echo pin receives the ultrasonic signal
+  pinMode(ECHO_PIN, INPUT);
+}
+
+
+// This function measures the distance using the ultrasonic sensor
+long readDistanceCM() {
+
+  // Make sure the trigger starts LOW
+  digitalWrite(TRIG_PIN, LOW);
+
+  // Wait 2 microseconds
+  delayMicroseconds(2);
+
+  // Send a HIGH signal for 10 microseconds
+  // This tells the ultrasonic sensor to send a sound pulse
+  digitalWrite(TRIG_PIN, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(TRIG_PIN, LOW);
+
+  // Measure how long it takes for the echo to return
+  long duration = pulseIn(ECHO_PIN, HIGH);
+
+  // Convert the time into distance in centimetres
+  return duration * 0.0343 / 2;
+}
+
+
+void loop()
+{
+  // Read the current state of the button
+  int buttonState = digitalRead(BUTTON_PIN);
+
+
+  // Check if the button has just been pressed
+  // buttonState == LOW means button is currently pressed
+  // lastButtonState == HIGH means button was NOT pressed previously
+  // This prevents the program from repeatedly detecting the same button press.
+  //But if the ship has aleady been wrecked, dropping the anchor doesnt make any change to the scenario
+  if (buttonState == LOW &&
+      lastButtonState == HIGH &&
+      currentState != WRECKED) 
+  {
+
+    if (currentState == ANCHOR_DROPPED)
+    {
+      // Pressing the button again raises the anchor
+      // and returns the ship to normal sailing
+      currentState = OPEN_SEA;
+    }
+    else
+    {
+      // Remember what state the ship was in before dropping the anchor
+      stateBeforeAnchor = currentState;
+
+    //The anchor overrides the storm/Charybdis state
+      currentState = ANCHOR_DROPPED;
+
+      // Cancel any danger timer that might have been running
+      dangerStartTime = 0;
+    }
+  }
+
+
+  // Save the current button state.
+  // We use this next time loop() runs to detect
+  // whether the button has just been pressed.
+  lastButtonState = buttonState;
+
+
+  // Read the amount of light detected by the light sensor
+  int lightLevel = analogRead(LIGHT_PIN);
+
+  // Read the distance detected by the ultrasonic sensor
+  long distance = readDistanceCM();
+
+
+  // Check whether the light level is low enough to be a storm
+  bool stormCondition = lightLevel < lightThreshold;
+
+
+  // Check whether something is closer than 100 cm
+  bool charybdisCondition = distance < CHARYBDIS_DISTANCE_CM;
+
+  // CHECK FOR A STORM
+  //We can only enter a storm if the condition is previously OPEN_EA
+  if (currentState == OPEN_SEA && stormCondition)
+  {
+    // Change the ship's state to STORM
+    currentState = STORM;
+	// Start the 5-second danger timer
+    dangerStartTime = millis();
+  }
+
+  // CHECK FOR CHARYBDIS
+ //We only enter CHARYBDIS if something is too close and we are at OPEN_SEA
+  if (currentState == OPEN_SEA && charybdisCondition)
+  {
+    // Change the ship's state to CHARYBDIS
+    currentState = CHARYBDIS;
+
+    // Start the 5-second danger timer
+    dangerStartTime = millis();
+  }
+
+  // HANDLE THE STORM STATE
+  if (currentState == STORM)
+  {
+    // If the storm has disappeared,return to OPEN_SEA
+    if (!stormCondition)
+    {
+      currentState = OPEN_SEA;
+    }
+
+    // Otherwise, check whether the ship has been
+    // in the storm for 5 seconds.
+    // millis() = time since Arduino started
+    else if (millis() - dangerStartTime >= 5000)
+    {
+      // 5 seconds have passed and the storm still persists, so the ship is WRECKED
+      currentState = WRECKED;
+    }
+  }
+
+  // HANDLE THE CHARYBDIS STATE
+
+  if (currentState == CHARYBDIS)
+  {
+    // If Charybdis is no longer nearby,return to OPEN_SEA.
+    if (!charybdisCondition)
+    {
+      currentState = OPEN_SEA;
+    }
+
+    // If Charybdis is still nearby after 5 seconds,the ship becomes WRECKED.
+    else if (millis() - dangerStartTime >= 5000)
+    {
+      currentState = WRECKED;
+    }
+  }
+
+  // DISPLAY THE CURRENT STATE:
+  // Clear whatever was previously displayed
+  lcd.clear();
+
+  // Move the LCD cursor to the first column of the first row
+
+  lcd.setCursor(0, 0);
+  lcd.print("STATE:");
+
+  // Move the cursor to the first column of the second row
+  lcd.setCursor(0, 1);
+
+  // Display the name of the current state
+  if (currentState == ANCHOR_DROPPED)
+    lcd.print("ANCHOR DROPPED");
+
+  if (currentState == OPEN_SEA)
+    lcd.print("OPEN SEA");
+
+  if (currentState == STORM)
+    lcd.print("STORM");
+
+  if (currentState == CHARYBDIS)
+    lcd.print("CHARYBDIS");
+
+  if (currentState == WRECKED)
+    lcd.print("WRECKED");
+
+
+  // Wait 200 milliseconds before running loop() again
+  delay(200);
+}
